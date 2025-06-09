@@ -1,65 +1,90 @@
+# app.py
+
 import streamlit as st
 import json
 import jsonlines
 import os
-import openai
-from utils.summarizer import summarize_examples, estimate_tokens
+from openai import OpenAI
+from summarizer import summarize_text, count_tokens
+from datetime import datetime
 
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+st.set_page_config(page_title="📉 Input Summarizer", layout="wide")
+st.title("📉 Input Summarizer Tool")
 
-st.set_page_config(page_title="📉 Input Summarizer", page_icon="🧠")
+api_key = st.secrets.get("OPENAI_API_KEY")
+if not api_key:
+    st.error("No API key found in secrets. Please add OPENAI_API_KEY.")
+    st.stop()
 
-st.title("📉 Résumeur d'exemples JSON/JSONL")
+client = OpenAI(api_key=api_key)
 
-uploaded_file = st.file_uploader("📄 Chargez un fichier `.json` ou `.jsonl`", type=["json", "jsonl"])
-model_choice = st.selectbox("🤖 Modèle OpenAI", ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"])
-shrink_ratio = st.slider("🔽 Réduction approximative de l'entrée", 0.1, 0.9, 0.6, step=0.05)
-max_examples = st.number_input("🔢 Nombre maximal d'exemples à traiter", min_value=1, value=100)
+model = st.radio("Select model", ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"], horizontal=True)
+reduction_percent = st.slider("Target reduction percentage", 10, 90, 50)
+reduction_ratio = reduction_percent / 100
 
-if st.button("⚙️ Lancer la réduction"):
-    if uploaded_file:
-        ext = os.path.splitext(uploaded_file.name)[1]
-        raw_examples = []
+uploaded_file = st.file_uploader("Upload a .json or .jsonl file with 'input' fields", type=["json", "jsonl"])
+no_limit = st.checkbox("🔓 Treat all examples (no max limit)")
+max_examples = None if no_limit else st.slider("Max examples to treat", 1, 100, 10)
 
-        if ext == ".json":
-            raw_examples = json.load(uploaded_file)
-        elif ext == ".jsonl":
-            with jsonlines.Reader(uploaded_file) as reader:
-                raw_examples = list(reader)
+if uploaded_file:
+    file_ext = os.path.splitext(uploaded_file.name)[1]
+    examples = []
 
-        if not raw_examples:
-            st.warning("Aucun exemple détecté.")
-        else:
-            with st.spinner("⏳ Résumé en cours..."):
-                summarized, token_logs = summarize_examples(
-                    raw_examples,
-                    model=model_choice,
-                    ratio=shrink_ratio,
-                    max_count=max_examples
-                )
-
-            total_input = sum(log["original_tokens"] for log in token_logs)
-            total_output = sum(log["summary_tokens"] for log in token_logs)
-            total_cost = estimate_tokens(total_input, total_output, model_choice)
-
-            st.success("✅ Résumé terminé")
-
-            st.markdown("### 📊 Statistiques globales")
-            st.markdown(f"**Original tokens**: {total_input}")
-            st.markdown(f"**Résumé tokens**: {total_output}")
-            st.markdown(f"**Réduction moyenne**: {100 * (1 - total_output / total_input):.1f}%")
-            st.markdown(f"**Coût estimé**: **${total_cost:.4f}**")
-
-            st.markdown("### 📁 Télécharger le résultat")
-            output_filename = "résumé_output.json"
-            with open(output_filename, "w", encoding="utf-8") as f:
-                json.dump(summarized, f, ensure_ascii=False, indent=2)
-            with open(output_filename, "rb") as f:
-                st.download_button("📥 Télécharger le fichier résumé", f, file_name=output_filename)
-
-            st.markdown("### 🪵 Détails par exemple")
-            for i, log in enumerate(token_logs):
-                st.markdown(f"- Exemple {i+1}: {log['original_tokens']} → {log['summary_tokens']} tokens")
-
+    if file_ext == ".jsonl":
+        with jsonlines.Reader(uploaded_file) as reader:
+            for row in reader:
+                if "input" in row:
+                    examples.append(row)
     else:
-        st.warning("Veuillez d'abord charger un fichier.")
+        data = json.load(uploaded_file)
+        examples = [ex for ex in data if "input" in ex]
+
+    st.success(f"Loaded {len(examples)} examples with 'input' field.")
+
+    if st.button("🚀 Run Summarization"):
+        summarized_results = []
+        total_cost = 0
+        cost_per_1k = {"gpt-3.5-turbo": 0.0015, "gpt-4": 0.03, "gpt-4-turbo": 0.01}
+
+        progress = st.progress(0)
+        display_limit = len(examples) if no_limit else min(max_examples, len(examples))
+
+        for i, ex in enumerate(examples[:display_limit]):
+            input_text = ex["input"]
+            original_tokens = count_tokens(input_text, model)
+            try:
+                summary, summarized_tokens = summarize_text(input_text, client, model, reduction_ratio)
+            except Exception as e:
+                summary = f"[ERROR: {str(e)}]"
+                summarized_tokens = 0
+
+            cost = (original_tokens + summarized_tokens) * cost_per_1k[model] / 1000
+            total_cost += cost
+
+            summarized_results.append({
+                "input": input_text,
+                "output": summary,
+                "original_tokens": original_tokens,
+                "summary_tokens": summarized_tokens,
+                "reduction_pct": round(100 * (1 - summarized_tokens / original_tokens), 1) if original_tokens > 0 else 0,
+                "estimated_cost": round(cost, 4)
+            })
+
+            progress.progress((i + 1) / display_limit)
+
+        st.success(f"✅ Done summarizing {display_limit} examples.")
+        st.markdown(f"### 💰 Total estimated cost: **${total_cost:.4f}**")
+
+        st.markdown("### 🔍 Detailed Results")
+        for i, item in enumerate(summarized_results):
+            st.markdown(f"**Ex {i+1}** — 🧮 Original: {item['original_tokens']} → ✂️ Summary: {item['summary_tokens']} tokens (**-{item['reduction_pct']}%**), 💵 ${item['estimated_cost']}")
+            st.text_area("Original", item['input'], height=100)
+            st.text_area("Summary", item['output'], height=100)
+
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        output_filename = f"summarized_output_{timestamp}.json"
+        with open(output_filename, "w", encoding="utf-8") as f:
+            json.dump(summarized_results, f, ensure_ascii=False, indent=2)
+
+        with open(output_filename, "rb") as f:
+            st.download_button("📥 Download Results", data=f, file_name=output_filename, mime="application/json")
