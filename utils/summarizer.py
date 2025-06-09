@@ -1,51 +1,54 @@
-# utils/summarizer.py
-import json
-import tiktoken
 import openai
-import os
+import tiktoken
 
-def count_tokens(text, model_name="gpt-3.5-turbo"):
-    enc = tiktoken.encoding_for_model(model_name)
+def num_tokens(text: str, model: str = "gpt-3.5-turbo") -> int:
+    enc = tiktoken.encoding_for_model(model)
     return len(enc.encode(text))
 
-def compute_token_reduction(original, summarized):
-    return round((1 - summarized / original) * 100, 1) if original else 0.0
+def summarize_examples(examples, model="gpt-3.5-turbo", ratio=0.6, max_count=100):
+    summarized = []
+    logs = []
 
-def summarize_text(text, model, client, max_target_tokens=100):
-    response = client.chat.completions.create(
-        model=model,
-        messages=[{
-            "role": "system",
-            "content": "Résume le texte ci-dessous de façon concise sans perdre les faits importants. Garde un ton neutre et journalistique."
-        }, {
-            "role": "user",
-            "content": text
-        }],
-        max_tokens=max_target_tokens,
-        temperature=0.3
-    )
-    result = response.choices[0].message.content
-    prompt_tokens = response.usage.prompt_tokens
-    completion_tokens = response.usage.completion_tokens
-    return result, prompt_tokens, completion_tokens
+    for i, ex in enumerate(examples[:max_count]):
+        original = ex.get("input", "")
+        target_len = int(num_tokens(original, model) * ratio)
 
-def estimate_cost(prompt_tokens, completion_tokens, config):
-    return (prompt_tokens * config["prompt"] + completion_tokens * config["completion"]) / 1000
+        prompt = f"Résume le texte suivant de manière informative, sans changer les faits, pour réduire le nombre de tokens à environ {target_len} tokens:\n\n{original}"
 
-def load_examples_from_json_or_jsonl(file):
-    if file.name.endswith(".jsonl"):
-        return [json.loads(line) for line in file.read().decode("utf-8").splitlines()]
-    elif file.name.endswith(".json"):
-        return json.load(file)
-    else:
-        raise ValueError("Unsupported file type")
+        try:
+            response = openai.ChatCompletion.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "Tu es un assistant de résumé pour des textes journalistiques."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.4,
+                max_tokens=target_len + 50  # allow margin
+            )
+            summary = response["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            summary = f"[ERREUR: {e}]"
 
-def save_summarized_jsonl(data, filename):
-    with open(filename, "w", encoding="utf-8") as f:
-        for item in data:
-            json.dump(item, f, ensure_ascii=False)
-            f.write("\n")
+        summarized.append({
+            "input": summary,
+            "output": ex.get("output", "")
+        })
 
-def log_token_metrics(index, original, target, prompt, completion):
-    reduction = compute_token_reduction(original, completion)
-    return f"[#{index}] Original: {original} → Target: {target} → Prompt: {prompt} / Completion: {completion} → ↓ {reduction}%"
+        logs.append({
+            "original_tokens": num_tokens(original, model),
+            "summary_tokens": num_tokens(summary, model)
+        })
+
+    return summarized, logs
+
+def estimate_tokens(input_toks, output_toks, model):
+    rates = {
+        "gpt-3.5-turbo": {"prompt": 0.001, "completion": 0.002},
+        "gpt-4": {"prompt": 0.03, "completion": 0.06},
+        "gpt-4-turbo": {"prompt": 0.01, "completion": 0.03}
+    }
+    if model not in rates:
+        return 0.0
+    p = rates[model]["prompt"]
+    c = rates[model]["completion"]
+    return (input_toks * p + output_toks * c) / 1000
