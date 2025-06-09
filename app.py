@@ -1,92 +1,65 @@
-# app.py
 import streamlit as st
 import json
-from datetime import datetime
-from openai import OpenAI
-from utils.summarizer import (
-    count_tokens,
-    summarize_text,
-    estimate_cost,
-    compute_token_reduction,
-    load_examples_from_json_or_jsonl,
-    save_summarized_jsonl,
-    log_token_metrics
-)
+import jsonlines
+import os
+import openai
+from utils.summarizer import summarize_examples, estimate_tokens
 
-st.set_page_config(page_title="🧠 Input Summarizer", layout="wide")
+openai.api_key = st.secrets["OPENAI_API_KEY"]
 
-MODEL_OPTIONS = {
-    "gpt-3.5-turbo": {"prompt": 0.001, "completion": 0.002, "max_tokens": 16000},
-    "gpt-4": {"prompt": 0.03, "completion": 0.06, "max_tokens": 8192},
-    "gpt-4-turbo": {"prompt": 0.01, "completion": 0.03, "max_tokens": 128000},
-}
+st.set_page_config(page_title="📉 Input Summarizer", page_icon="🧠")
 
-st.title("📉 Input Summarizer for Few-Shot Examples")
+st.title("📉 Résumeur d'exemples JSON/JSONL")
 
-uploaded_file = st.file_uploader("📄 Upload JSON or JSONL file with examples", type=["json", "jsonl"])
+uploaded_file = st.file_uploader("📄 Chargez un fichier `.json` ou `.jsonl`", type=["json", "jsonl"])
+model_choice = st.selectbox("🤖 Modèle OpenAI", ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"])
+shrink_ratio = st.slider("🔽 Réduction approximative de l'entrée", 0.1, 0.9, 0.6, step=0.05)
+max_examples = st.number_input("🔢 Nombre maximal d'exemples à traiter", min_value=1, value=100)
 
-if uploaded_file:
-    examples = load_examples_from_json_or_jsonl(uploaded_file)
-    st.success(f"✅ Loaded {len(examples)} examples")
+if st.button("⚙️ Lancer la réduction"):
+    if uploaded_file:
+        ext = os.path.splitext(uploaded_file.name)[1]
+        raw_examples = []
 
-    model_choice = st.selectbox("🤖 Choose GPT model", list(MODEL_OPTIONS.keys()))
-    compression = st.slider("📉 Compression Ratio (approx.)", min_value=0.1, max_value=1.0, step=0.05, value=0.5)
-    max_examples = st.slider("🔢 Number of examples to process", 1, min(500, len(examples)), 100)
+        if ext == ".json":
+            raw_examples = json.load(uploaded_file)
+        elif ext == ".jsonl":
+            with jsonlines.Reader(uploaded_file) as reader:
+                raw_examples = list(reader)
 
-    model_config = MODEL_OPTIONS[model_choice]
-    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+        if not raw_examples:
+            st.warning("Aucun exemple détecté.")
+        else:
+            with st.spinner("⏳ Résumé en cours..."):
+                summarized, token_logs = summarize_examples(
+                    raw_examples,
+                    model=model_choice,
+                    ratio=shrink_ratio,
+                    max_count=max_examples
+                )
 
-    if st.button("⚡ Run Summarization"):
-        summarized = []
-        logs = []
-        total_prompt = 0
-        total_completion = 0
-        progress = st.progress(0)
+            total_input = sum(log["original_tokens"] for log in token_logs)
+            total_output = sum(log["summary_tokens"] for log in token_logs)
+            total_cost = estimate_tokens(total_input, total_output, model_choice)
 
-        for idx, ex in enumerate(examples[:max_examples]):
-            original_text = ex["input"]
-            original_tokens = count_tokens(original_text, model_choice)
-            target_tokens = int(original_tokens * compression)
+            st.success("✅ Résumé terminé")
 
-            summary, p_tokens, c_tokens = summarize_text(
-                original_text,
-                model=model_choice,
-                client=client,
-                max_target_tokens=target_tokens
-            )
+            st.markdown("### 📊 Statistiques globales")
+            st.markdown(f"**Original tokens**: {total_input}")
+            st.markdown(f"**Résumé tokens**: {total_output}")
+            st.markdown(f"**Réduction moyenne**: {100 * (1 - total_output / total_input):.1f}%")
+            st.markdown(f"**Coût estimé**: **${total_cost:.4f}**")
 
-            summarized.append({
-                "input": summary.strip(),
-                "output": ex["output"],
-                "meta": {
-                    "original_tokens": original_tokens,
-                    "summary_tokens": c_tokens,
-                    "reduction": compute_token_reduction(original_tokens, c_tokens),
-                }
-            })
+            st.markdown("### 📁 Télécharger le résultat")
+            output_filename = "résumé_output.json"
+            with open(output_filename, "w", encoding="utf-8") as f:
+                json.dump(summarized, f, ensure_ascii=False, indent=2)
+            with open(output_filename, "rb") as f:
+                st.download_button("📥 Télécharger le fichier résumé", f, file_name=output_filename)
 
-            logs.append(log_token_metrics(idx, original_tokens, target_tokens, p_tokens, c_tokens))
+            st.markdown("### 🪵 Détails par exemple")
+            for i, log in enumerate(token_logs):
+                st.markdown(f"- Exemple {i+1}: {log['original_tokens']} → {log['summary_tokens']} tokens")
 
-            total_prompt += p_tokens
-            total_completion += c_tokens
-            progress.progress((idx + 1) / max_examples)
-
-        cost = estimate_cost(total_prompt, total_completion, model_config)
-        st.markdown("### 📊 Token & Cost Summary")
-        st.markdown(f"**Total prompt tokens:** {total_prompt}")
-        st.markdown(f"**Total completion tokens:** {total_completion}")
-        st.markdown(f"**Estimated cost:** ${cost:.4f}")
-
-        filename = f"summarized_{datetime.now().strftime('%Y%m%d%H%M%S')}.jsonl"
-        save_summarized_jsonl(summarized, filename)
-
-        with open(filename, "rb") as f:
-            st.download_button(
-                label="📥 Download summarized JSONL",
-                data=f,
-                file_name=filename,
-                mime="application/jsonl"
-            )
-
-        st.markdown("### 📄 Token Metrics per Example")
-        st.code("\n".join(logs), language="text")
+    else:
+        st.warning("Veuillez d'abord charger un fichier.")
