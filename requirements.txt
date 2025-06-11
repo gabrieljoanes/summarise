@@ -5,5 +5,5 @@ tiktoken==0.5.1
 jsonlines==3.1.0
 
 # Optional (for local testing or fallback summarization using HuggingFace)
-transformers==4.38.2
-torch==2.1.0
+# transformers==4.38.2
+# torch==2.1.0
