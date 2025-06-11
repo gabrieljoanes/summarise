@@ -1,59 +1,50 @@
-# app.py
 import streamlit as st
 import json
-import jsonlines
-import os
-from summarizer import summarize_text, count_tokens
+import io
+from utils.summary import summarize_with_ratio
 
-st.set_page_config(page_title="📝 Résumeur d'exemples", page_icon="📝")
-st.title("📝 Résumeur d'exemples (JSON / JSONL)")
+st.set_page_config(page_title="Adjustable Summariser", layout="wide")
+st.title("📝 JSON Input Summariser with Adjustable Summary Length")
 
-uploaded_file = st.file_uploader("📂 Téléversez un fichier JSON ou JSONL", type=["json", "jsonl"])
+uploaded_file = st.file_uploader("Upload a JSON file", type="json")
 
-model = st.selectbox("🤖 Modèle à utiliser", ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"])
-shrink_percent = st.slider("🔧 Pourcentage de réduction souhaité", min_value=10, max_value=90, value=50)
-no_limit = st.checkbox("⚠️ Traiter tous les exemples sans limite")
-limit = None if no_limit else st.number_input("🔢 Nombre max d'exemples à traiter", min_value=1, value=20, step=1)
+summary_percent = st.slider(
+    "Select summary output length (as a percentage of original word count)",
+    min_value=10, max_value=90, value=20, step=5
+) / 100  # Convert to float
 
 if uploaded_file:
-    ext = os.path.splitext(uploaded_file.name)[1].lower()
-    examples = []
+    raw_data = json.load(uploaded_file)
+    summarized_data = []
 
-    if ext == ".jsonl":
-        with jsonlines.Reader(uploaded_file) as reader:
-            for item in reader:
-                examples.append(item)
-    elif ext == ".json":
-        examples = json.load(uploaded_file)
+    for entry in raw_data:
+        original_input = entry.get("input", "")
+        transition_output = entry.get("output", "")
+        summaries = summarize_with_ratio(original_input, summary_percent)
 
-    st.write(f"📊 {len(examples)} exemples chargés.")
+        summarized_data.append({
+            "input": original_input,
+            "summaries": summaries,
+            "original_output": transition_output
+        })
 
-    summarized_examples = []
-    total_prompt = 0
-    total_summary = 0
+    st.success(f"Processed {len(summarized_data)} entries.")
+    
+    for i, item in enumerate(summarized_data, 1):
+        st.markdown(f"---\n### Entry {i}")
+        st.markdown("#### Original Input")
+        st.text(item['input'])
+        st.markdown("#### Summarized Sections")
+        for idx, section in enumerate(item['summaries'], 1):
+            st.markdown(f"**Section {idx}:** {section}")
+        st.markdown("#### Original Transition Output")
+        st.text(item['original_output'])
 
-    with st.spinner("✂️ Résumés en cours..."):
-        for i, ex in enumerate(examples):
-            if limit is not None and i >= limit:
-                break
-            input_text = ex["input"]
-            summary, prompt_t, summary_t = summarize_text(input_text, shrink_percent, model)
-            summarized_examples.append({"input": input_text, "output": summary})
-            total_prompt += prompt_t
-            total_summary += summary_t
-
-            st.markdown(f"**Exemple {i + 1}**")
-            st.code(summary)
-            st.progress((i + 1) / min(limit or len(examples), len(examples)))
-
-    st.success("✅ Résumés terminés")
-    st.markdown(f"**🔢 Tokens totaux utilisés**: prompt = {total_prompt}, summary = {total_summary}")
-    rate = {"gpt-3.5-turbo": 0.002, "gpt-4": 0.06, "gpt-4-turbo": 0.03}
-    cost = (total_prompt + total_summary) / 1000 * rate[model]
-    st.markdown(f"💰 **Coût estimé**: ${cost:.4f}")
-
-    output_filename = "output_summarized.json"
-    with open(output_filename, "w") as f:
-        json.dump(summarized_examples, f, indent=2, ensure_ascii=False)
-    with open(output_filename, "rb") as f:
-        st.download_button("📥 Télécharger le fichier JSON", f, file_name=output_filename, mime="application/json")
+    # Download button
+    output_json = json.dumps(summarized_data, ensure_ascii=False, indent=2)
+    st.download_button(
+        label="📥 Download Summarized JSON",
+        data=io.StringIO(output_json),
+        file_name="summarized_output.json",
+        mime="application/json"
+    )
