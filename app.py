@@ -3,48 +3,59 @@ import json
 import io
 from utils.summary import summarize_with_ratio
 
+# Configure Streamlit page
 st.set_page_config(page_title="Adjustable Summariser", layout="wide")
-st.title("📝 JSON Input Summariser with Adjustable Summary Length")
+st.title("📝 Adjustable JSON Summariser")
 
-uploaded_file = st.file_uploader("Upload a JSON file", type="json")
+# File uploader
+uploaded_file = st.file_uploader("📂 Upload a JSON file", type="json")
 
-summary_percent = st.slider(
-    "Select summary output length (as a percentage of original word count)",
+# Summary length selector
+summary_ratio = st.slider(
+    "✂️ Choose summary length as a percentage of original word count",
     min_value=10, max_value=90, value=20, step=5
-) / 100  # Convert to float
+) / 100.0  # Convert to float for use in summarization
 
+# Processing and display logic
 if uploaded_file:
-    raw_data = json.load(uploaded_file)
-    summarized_data = []
+    try:
+        raw_data = json.load(uploaded_file)
+        summarized_results = []
 
-    for entry in raw_data:
-        original_input = entry.get("input", "")
-        transition_output = entry.get("output", "")
-        summaries = summarize_with_ratio(original_input, summary_percent)
+        for entry in raw_data:
+            input_text = entry.get("input", "")
+            transition = entry.get("output", "")
+            summaries = summarize_with_ratio(input_text, summary_ratio)
 
-        summarized_data.append({
-            "input": original_input,
-            "summaries": summaries,
-            "original_output": transition_output
-        })
+            summarized_results.append({
+                "input": input_text,
+                "summaries": summaries,
+                "original_output": transition
+            })
 
-    st.success(f"Processed {len(summarized_data)} entries.")
-    
-    for i, item in enumerate(summarized_data, 1):
-        st.markdown(f"---\n### Entry {i}")
-        st.markdown("#### Original Input")
-        st.text(item['input'])
-        st.markdown("#### Summarized Sections")
-        for idx, section in enumerate(item['summaries'], 1):
-            st.markdown(f"**Section {idx}:** {section}")
-        st.markdown("#### Original Transition Output")
-        st.text(item['original_output'])
+        st.success(f"✅ Successfully processed {len(summarized_results)} entries.")
 
-    # Download button
-    output_json = json.dumps(summarized_data, ensure_ascii=False, indent=2)
-    st.download_button(
-        label="📥 Download Summarized JSON",
-        data=io.StringIO(output_json),
-        file_name="summarized_output.json",
-        mime="application/json"
-    )
+        # Display each result
+        for idx, result in enumerate(summarized_results, start=1):
+            st.markdown(f"---\n### 🧾 Entry {idx}")
+            st.markdown("#### 🔹 Original Input")
+            st.text(result["input"])
+
+            st.markdown("#### ✂️ Summarized Sections")
+            for i, section in enumerate(result["summaries"], start=1):
+                st.markdown(f"**Section {i}:** {section}")
+
+            st.markdown("#### 🔄 Original Transition Output")
+            st.text(result["original_output"])
+
+        # JSON download
+        download_str = json.dumps(summarized_results, ensure_ascii=False, indent=2)
+        st.download_button(
+            label="📥 Download Summarized JSON",
+            data=io.StringIO(download_str),
+            file_name="summarized_output.json",
+            mime="application/json"
+        )
+
+    except Exception as e:
+        st.error(f"⚠️ Error processing file: {e}")
