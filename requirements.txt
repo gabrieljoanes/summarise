@@ -1,4 +1,9 @@
-streamlit>=1.30.0
-openai>=1.3.0
-tiktoken>=0.5.1
-jsonlines>=3.1.0
+# Core dependencies
+streamlit==1.30.0
+openai==1.3.5
+tiktoken==0.5.1
+jsonlines==3.1.0
+
+# Optional (for local testing or fallback summarization using HuggingFace)
+transformers==4.38.2
+torch==2.1.0
